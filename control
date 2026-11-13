@@ -1,0 +1,8 @@
+Package: com.solhk.qs
+Name: QS
+Version: 1.01
+Architecture: iphoneos-arm64
+Description: Automatically uses the native splash-ad skip button in Soda Music.
+Maintainer: SOLHK
+Section: Tweaks
+Depends: mobilesubstrate, firmware (>= 15.0)
