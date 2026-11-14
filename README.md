@@ -1,7 +1,7 @@
 # QS
 
-QS 1.01 是汽水音乐（`com.soda.music`）的 iOS 开屏广告跳过插件。应用进入前台后，QS 在短时间内查找已显示、可点击的原生跳过按钮，并触发按钮自身的动作。插件构建目标为 arm64，最低 iOS 15.0。`.deb` 需要兼容的 rootless 插件加载器。
+QS 1.02 为汽水音乐 21.6.1（构建号 100216110）的播放页和听歌模式侧栏添加系统液态玻璃。样式接入宿主控件的布局，点击、手势和选中状态由原控件处理。
 
-在配置好 iPhoneOS SDK 的 [Theos](https://theos.dev/docs/installation-macos) 环境中执行 `make package FINALPACKAGE=1`。生成的 `.deb` 在 `packages/` 目录。
+需要 iOS 26 或更新版本、arm64 和兼容的 rootless 插件加载器。配置好 iPhoneOS SDK 的 [Theos](https://theos.dev/docs/installation-macos) 后，运行 `make package FINALPACKAGE=1`。生成的 `.deb` 位于 `packages/`。
 
-汽水音乐的 Bundle ID 来自 [Apple 应用元数据](https://itunes.apple.com/lookup?id=1605585211&country=cn)。跳过按钮类名参考 [汽水音乐规则](https://github.com/swipt-automation/official-swiplets/blob/fb69b9ee1e56aef929f3f6733ccdcb326336028f/skip-chinese-ads/src/rules.ts#L859) 和 [ByteDance SDK 规则](https://github.com/swipt-automation/official-swiplets/blob/fb69b9ee1e56aef929f3f6733ccdcb326336028f/skip-chinese-ads/src/rules.ts#L40)。
+材质使用 UIKit 的 `UIGlassEffect` 与 `UIVisualEffectView`。[Apple UIKit 液态玻璃示例](https://developer.apple.com/videos/play/wwdc2025/284/)

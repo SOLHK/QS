@@ -1,117 +1,125 @@
-#import <UIKit/UIKit.h>
+#import "QS.h"
+#import <objc/message.h>
+#import <objc/runtime.h>
 
-static NSString *const QSHostBundle = @"com.soda.music";
-static const NSTimeInterval QSScanInterval = 0.2;
-static const NSTimeInterval QSScanDuration = 6.0;
+static Class QSGlassEffectClass;
+static Class QSCornerConfigurationClass;
+static const NSInteger QSRegularGlassStyle = 0;
+static char QSGlassViewKey;
+static char QSSelectedKey;
 
-static NSHashTable<UIView *> *QSActivatedViews;
-static NSTimer *QSScanTimer;
-static NSTimeInterval QSScanDeadline;
-
-static BOOL QSTrySkip(UIView *view, Class sodaButton, Class byteDanceButton)
+void QSObserveLayout(const char *className, void (*style)(UIView *))
 {
-    Class viewClass = view.class;
-    if (view.hidden || view.alpha <= 0.01 || !view.userInteractionEnabled) {
-        return NO;
-    }
-
-    if ((viewClass == sodaButton || viewClass == byteDanceButton) &&
-        ![QSActivatedViews containsObject:view]) {
-        UIWindow *window = view.window;
-        CGRect bounds = view.bounds;
-        CGPoint center = CGPointMake(CGRectGetMidX(bounds), CGRectGetMidY(bounds));
-        UIView *hit = [window hitTest:[view convertPoint:center toView:window] withEvent:nil];
-        if (hit == view || [hit isDescendantOfView:view]) {
-            UIControl *control = [view isKindOfClass:UIControl.class] ? (UIControl *)view : nil;
-            if (control && !control.enabled) {
-                return NO;
-            }
-
-            UIControlEvents events = control.allControlEvents;
-            if (events & UIControlEventTouchUpInside) {
-                [control sendActionsForControlEvents:UIControlEventTouchUpInside];
-            } else if (events & UIControlEventPrimaryActionTriggered) {
-                [control sendActionsForControlEvents:UIControlEventPrimaryActionTriggered];
-            } else if (![view accessibilityActivate]) {
-                return NO;
-            }
-
-            [QSActivatedViews addObject:view];
-            return YES;
-        }
-    }
-
-    for (UIView *subview in view.subviews.reverseObjectEnumerator) {
-        if (QSTrySkip(subview, sodaButton, byteDanceButton)) {
-            return YES;
-        }
-    }
-    return NO;
-}
-
-static BOOL QSScanWindows(void)
-{
-    UIApplication *application = UIApplication.sharedApplication;
-    if (application.applicationState != UIApplicationStateActive) {
-        return NO;
-    }
-
-    Class sodaButton = NSClassFromString(@"STAd.SplashAdSkipButton");
-    Class byteDanceButton = NSClassFromString(@"BDASplashSkipButton");
-    if (!sodaButton && !byteDanceButton) {
-        return NO;
-    }
-
-    for (UIScene *scene in application.connectedScenes) {
-        if (scene.activationState != UISceneActivationStateForegroundActive ||
-            ![scene isKindOfClass:UIWindowScene.class]) {
-            continue;
-        }
-
-        for (UIWindow *window in ((UIWindowScene *)scene).windows.reverseObjectEnumerator) {
-            if (QSTrySkip(window, sodaButton, byteDanceButton)) {
-                return YES;
-            }
-        }
-    }
-    return NO;
-}
-
-static void QSStartScan(void)
-{
-    QSScanDeadline = NSProcessInfo.processInfo.systemUptime + QSScanDuration;
-    if (QSScanTimer) {
+    Class viewClass = objc_lookUpClass(className);
+    if (![viewClass isSubclassOfClass:UIView.class]) {
         return;
     }
 
-    QSScanTimer = [NSTimer timerWithTimeInterval:QSScanInterval repeats:YES block:^(NSTimer *timer) {
-        if (NSProcessInfo.processInfo.systemUptime >= QSScanDeadline || QSScanWindows()) {
-            [timer invalidate];
-            QSScanTimer = nil;
+    SEL layout = @selector(layoutSubviews);
+    Method method = class_getInstanceMethod(viewClass, layout);
+    void (*original)(UIView *, SEL) = (void (*)(UIView *, SEL))method_getImplementation(method);
+    IMP replacement = imp_implementationWithBlock(^(UIView *view) {
+        original(view, layout);
+        if (object_getClass(view) == viewClass && view.window) {
+            style(view);
         }
-    }];
-    [NSRunLoop.mainRunLoop addTimer:QSScanTimer forMode:NSRunLoopCommonModes];
+    });
+    class_replaceMethod(viewClass, layout, replacement, method_getTypeEncoding(method));
 }
 
-__attribute__((constructor)) static void QSInitialize(void)
+UIView *QSView(UIView *owner, const char *field)
 {
-    @autoreleasepool {
-        if (![NSBundle.mainBundle.bundleIdentifier isEqualToString:QSHostBundle]) {
-            return;
-        }
+    Ivar ivar = class_getInstanceVariable(object_getClass(owner), field);
+    if (!ivar) {
+        return nil;
+    }
 
+    // Callers name only fields verified to store a strong UIKit view in 21.6.1.
+    id value = object_getIvar(owner, ivar);
+    return [value isKindOfClass:UIView.class] ? value : nil;
+}
+
+void QSGlass(UIView *host, UIEdgeInsets insets, CGFloat maximumRadius, BOOL selected)
+{
+    if (!host) {
+        return;
+    }
+    CGRect frame = UIEdgeInsetsInsetRect(host.bounds, insets);
+    UIVisualEffectView *glass = objc_getAssociatedObject(host, &QSGlassViewKey);
+    if (CGRectIsEmpty(frame)) {
+        glass.hidden = YES;
+        return;
+    }
+
+    if (!glass) {
+        glass = [[UIVisualEffectView alloc] initWithEffect:nil];
+        glass.userInteractionEnabled = NO;
+        glass.accessibilityElementsHidden = YES;
+
+        id (*capsule)(Class, SEL, CGFloat) = (void *)objc_msgSend;
+        id corners = capsule(QSCornerConfigurationClass,
+                             sel_registerName("capsuleConfigurationWithMaximumRadius:"),
+                             maximumRadius);
+        void (*setCorners)(UIView *, SEL, id) = (void *)objc_msgSend;
+        setCorners(glass, sel_registerName("setCornerConfiguration:"), corners);
+        objc_setAssociatedObject(host, &QSGlassViewKey, glass, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    NSNumber *previousSelection = objc_getAssociatedObject(glass, &QSSelectedKey);
+    if (!previousSelection || previousSelection.boolValue != selected) {
+        UIVisualEffect *(*makeEffect)(Class, SEL, NSInteger) = (void *)objc_msgSend;
+        UIVisualEffect *effect = makeEffect(QSGlassEffectClass, sel_registerName("effectWithStyle:"), QSRegularGlassStyle);
+        if (selected) {
+            void (*setTintColor)(UIVisualEffect *, SEL, UIColor *) = (void *)objc_msgSend;
+            setTintColor(effect, sel_registerName("setTintColor:"),
+                         [UIColor colorWithWhite:1.0 alpha:0.72]);
+        }
+        glass.effect = effect;
+        objc_setAssociatedObject(glass, &QSSelectedKey, @(selected), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    glass.hidden = NO;
+    if (!CGRectEqualToRect(glass.frame, frame)) {
+        glass.frame = frame;
+    }
+    if (host.subviews.firstObject != glass) {
+        [host insertSubview:glass atIndex:0];
+    }
+}
+
+void QSRemoveGlass(UIView *host)
+{
+    UIVisualEffectView *glass = objc_getAssociatedObject(host, &QSGlassViewKey);
+    if (glass) {
+        [glass removeFromSuperview];
+        objc_setAssociatedObject(host, &QSGlassViewKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
+__attribute__((constructor))
+static void QSInstall(void)
+{
+    NSOperatingSystemVersion minimumVersion = {26, 0, 0};
+    if (![NSProcessInfo.processInfo isOperatingSystemAtLeastVersion:minimumVersion]) {
+        return;
+    }
+
+    NSBundle *host = NSBundle.mainBundle;
+    if (![host.bundleIdentifier isEqualToString:@"com.soda.music"] ||
+        ![[host objectForInfoDictionaryKey:@"CFBundleShortVersionString"] isEqual:@"21.6.1"] ||
+        ![[host objectForInfoDictionaryKey:@"CFBundleVersion"] isEqual:@"100216110"]) {
+        return;
+    }
+
+    QSGlassEffectClass = objc_lookUpClass("UIGlassEffect");
+    QSCornerConfigurationClass = objc_lookUpClass("UICornerConfiguration");
+    if ([QSGlassEffectClass respondsToSelector:sel_registerName("effectWithStyle:")] &&
+        [QSGlassEffectClass instancesRespondToSelector:sel_registerName("setTintColor:")] &&
+        [QSCornerConfigurationClass respondsToSelector:sel_registerName("capsuleConfigurationWithMaximumRadius:")] &&
+        [UIVisualEffectView instancesRespondToSelector:sel_registerName("setCornerConfiguration:")]) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            QSActivatedViews = [NSHashTable hashTableWithOptions:NSPointerFunctionsWeakMemory |
-                                                                  NSPointerFunctionsObjectPointerPersonality];
-            NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
-            for (NSNotificationName name in @[UIApplicationDidBecomeActiveNotification,
-                                              UISceneDidActivateNotification]) {
-                [center addObserverForName:name object:nil queue:NSOperationQueue.mainQueue
-                                usingBlock:^(__unused NSNotification *notification) {
-                    QSStartScan();
-                }];
-            }
-            QSStartScan();
+            QSInstallPlayerGlass();
+            QSInstallModeGlass();
         });
     }
 }

@@ -1,8 +1,8 @@
 Package: com.solhk.qs
 Name: QS
-Version: 1.01
+Version: 1.02
 Architecture: iphoneos-arm64
-Description: Automatically uses the native splash-ad skip button in Soda Music.
+Description: Native Liquid Glass controls for Soda Music.
 Maintainer: SOLHK
 Section: Tweaks
-Depends: mobilesubstrate, firmware (>= 15.0)
+Depends: mobilesubstrate, firmware (>= 26.0)
