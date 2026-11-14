@@ -1,4 +1,5 @@
 #import "QS.h"
+#import "QSDiagnostics.h"
 #import <objc/message.h>
 #import <objc/runtime.h>
 
@@ -7,11 +8,13 @@ static Class QSCornerConfigurationClass;
 static const NSInteger QSRegularGlassStyle = 0;
 static char QSGlassViewKey;
 static char QSSelectedKey;
+static NSMutableSet<NSString *> *QSStyledTargets;
 
 void QSObserveLayout(const char *className, void (*style)(UIView *))
 {
     Class viewClass = objc_lookUpClass(className);
     if (![viewClass isSubclassOfClass:UIView.class]) {
+        QSLog([NSString stringWithFormat:@"layout_hook_missing=%s", className]);
         return;
     }
 
@@ -25,6 +28,7 @@ void QSObserveLayout(const char *className, void (*style)(UIView *))
         }
     });
     class_replaceMethod(viewClass, layout, replacement, method_getTypeEncoding(method));
+    QSLog([NSString stringWithFormat:@"layout_hook_installed=%s", className]);
 }
 
 UIView *QSView(UIView *owner, const char *field)
@@ -41,7 +45,7 @@ UIView *QSView(UIView *owner, const char *field)
 
 void QSGlass(UIView *host, UIEdgeInsets insets, CGFloat maximumRadius, BOOL selected)
 {
-    if (!host) {
+    if (!host.window) {
         return;
     }
     CGRect frame = UIEdgeInsetsInsetRect(host.bounds, insets);
@@ -51,7 +55,8 @@ void QSGlass(UIView *host, UIEdgeInsets insets, CGFloat maximumRadius, BOOL sele
         return;
     }
 
-    if (!glass) {
+    BOOL created = glass == nil;
+    if (created) {
         glass = [[UIVisualEffectView alloc] initWithEffect:nil];
         glass.userInteractionEnabled = NO;
         glass.accessibilityElementsHidden = YES;
@@ -63,6 +68,14 @@ void QSGlass(UIView *host, UIEdgeInsets insets, CGFloat maximumRadius, BOOL sele
         void (*setCorners)(UIView *, SEL, id) = (void *)objc_msgSend;
         setCorners(glass, sel_registerName("setCornerConfiguration:"), corners);
         objc_setAssociatedObject(host, &QSGlassViewKey, glass, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    glass.hidden = NO;
+    if (!CGRectEqualToRect(glass.frame, frame)) {
+        glass.frame = frame;
+    }
+    if (host.subviews.firstObject != glass) {
+        [host insertSubview:glass atIndex:0];
     }
 
     NSNumber *previousSelection = objc_getAssociatedObject(glass, &QSSelectedKey);
@@ -78,12 +91,12 @@ void QSGlass(UIView *host, UIEdgeInsets insets, CGFloat maximumRadius, BOOL sele
         objc_setAssociatedObject(glass, &QSSelectedKey, @(selected), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 
-    glass.hidden = NO;
-    if (!CGRectEqualToRect(glass.frame, frame)) {
-        glass.frame = frame;
-    }
-    if (host.subviews.firstObject != glass) {
-        [host insertSubview:glass atIndex:0];
+    if (created) {
+        NSString *className = NSStringFromClass(object_getClass(host));
+        if (![QSStyledTargets containsObject:className]) {
+            [QSStyledTargets addObject:className];
+            QSLog([NSString stringWithFormat:@"glass_created=%@", className]);
+        }
     }
 }
 
@@ -99,27 +112,46 @@ void QSRemoveGlass(UIView *host)
 __attribute__((constructor))
 static void QSInstall(void)
 {
-    NSOperatingSystemVersion minimumVersion = {26, 0, 0};
-    if (![NSProcessInfo.processInfo isOperatingSystemAtLeastVersion:minimumVersion]) {
-        return;
-    }
+    @autoreleasepool {
+        NSBundle *host = NSBundle.mainBundle;
+        if (![host.bundleIdentifier isEqualToString:@"com.soda.music"]) {
+            return;
+        }
+        NSString *version = [host objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
+        NSString *build = [host objectForInfoDictionaryKey:@"CFBundleVersion"];
+        NSOperatingSystemVersion os = NSProcessInfo.processInfo.operatingSystemVersion;
+        QSLog([NSString stringWithFormat:@"QS=1.03 host=%@ build=%@ iOS=%ld.%ld.%ld",
+               version, build, (long)os.majorVersion, (long)os.minorVersion, (long)os.patchVersion]);
 
-    NSBundle *host = NSBundle.mainBundle;
-    if (![host.bundleIdentifier isEqualToString:@"com.soda.music"] ||
-        ![[host objectForInfoDictionaryKey:@"CFBundleShortVersionString"] isEqual:@"21.6.1"] ||
-        ![[host objectForInfoDictionaryKey:@"CFBundleVersion"] isEqual:@"100216110"]) {
-        return;
-    }
-
-    QSGlassEffectClass = objc_lookUpClass("UIGlassEffect");
-    QSCornerConfigurationClass = objc_lookUpClass("UICornerConfiguration");
-    if ([QSGlassEffectClass respondsToSelector:sel_registerName("effectWithStyle:")] &&
-        [QSGlassEffectClass instancesRespondToSelector:sel_registerName("setTintColor:")] &&
-        [QSCornerConfigurationClass respondsToSelector:sel_registerName("capsuleConfigurationWithMaximumRadius:")] &&
-        [UIVisualEffectView instancesRespondToSelector:sel_registerName("setCornerConfiguration:")]) {
         dispatch_async(dispatch_get_main_queue(), ^{
+            QSInstallDiagnostics();
+            if (![version isEqual:@"21.6.1"] || ![build isEqual:@"100216110"]) {
+                QSLog(@"glass_skipped=unsupported_host_build");
+                return;
+            }
+            if (!QSGlassRequested()) {
+                QSLog(@"glass_skipped=disabled_by_user");
+                return;
+            }
+            if (os.majorVersion < 26) {
+                QSLog(@"glass_skipped=unsupported_os");
+                return;
+            }
+
+            QSGlassEffectClass = objc_lookUpClass("UIGlassEffect");
+            QSCornerConfigurationClass = objc_lookUpClass("UICornerConfiguration");
+            if (![QSGlassEffectClass respondsToSelector:sel_registerName("effectWithStyle:")] ||
+                ![QSGlassEffectClass instancesRespondToSelector:sel_registerName("setTintColor:")] ||
+                ![QSCornerConfigurationClass respondsToSelector:sel_registerName("capsuleConfigurationWithMaximumRadius:")] ||
+                ![UIVisualEffectView instancesRespondToSelector:sel_registerName("setCornerConfiguration:")]) {
+                QSLog(@"glass_skipped=uikit_api_unavailable");
+                return;
+            }
+
+            QSStyledTargets = [NSMutableSet set];
             QSInstallPlayerGlass();
             QSInstallModeGlass();
+            QSLog(@"glass_hooks_ready");
         });
     }
 }

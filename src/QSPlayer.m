@@ -1,4 +1,5 @@
 #import "QS.h"
+#import "QSDiagnostics.h"
 #import <objc/runtime.h>
 #include <math.h>
 
@@ -155,6 +156,17 @@ static void QSStyleSearch(UIView *frame)
     }
 
     UIButton *previous = objc_getAssociatedObject(frame, &QSSearchButtonKey);
+    if (target) {
+        static dispatch_once_t foundSearch;
+        dispatch_once(&foundSearch, ^{
+            QSLog(@"search_target_found");
+        });
+    } else if (buttons.count > 1) {
+        static dispatch_once_t ambiguousSearch;
+        dispatch_once(&ambiguousSearch, ^{
+            QSLog(@"search_target_ambiguous");
+        });
+    }
     if (previous != target) {
         QSRemoveGlass(previous);
         objc_setAssociatedObject(frame, &QSSearchButtonKey, target, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -213,12 +225,18 @@ static CGRect QSFollowFrame(id element, UIView *artist, NSUInteger depth)
     return CGRectNull;
 }
 
-static void QSStyleFollow(UIView *artist)
+static void QSUpdateFollowGlass(UIView *artist)
 {
     if (!artist.window || !QSIsSongFeedView(artist)) {
         return;
     }
     CGRect frame = QSFollowFrame(artist, artist, 8);
+    if (!CGRectIsEmpty(frame)) {
+        static dispatch_once_t foundFollow;
+        dispatch_once(&foundFollow, ^{
+            QSLog(@"follow_target_found");
+        });
+    }
     if (CGRectIsEmpty(frame)) {
         QSRemoveGlass(artist);
         return;
@@ -229,6 +247,24 @@ static void QSStyleFollow(UIView *artist)
                                           CGRectGetMaxY(artist.bounds) - CGRectGetMaxY(frame),
                                           CGRectGetMaxX(artist.bounds) - CGRectGetMaxX(frame));
     QSGlass(artist, insets, CGFLOAT_MAX, NO);
+}
+
+static void QSStyleFollow(UIView *artist)
+{
+    static char pendingKey;
+    if (objc_getAssociatedObject(artist, &pendingKey)) {
+        return;
+    }
+    objc_setAssociatedObject(artist, &pendingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak UIView *pendingArtist = artist;
+    // SwiftUI may lay out its hosted views while resolving accessibility frames.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIView *view = pendingArtist;
+        if (view) {
+            QSUpdateFollowGlass(view);
+            objc_setAssociatedObject(view, &pendingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    });
 }
 
 void QSInstallPlayerGlass(void)
