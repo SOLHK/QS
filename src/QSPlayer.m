@@ -4,6 +4,7 @@
 #include <math.h>
 
 static const char QSTabBarClass[] = "_TtC24ESTabBarController_swift8ESTabBar";
+static const char QSTabBarItemClass[] = "_TtC24ESTabBarController_swift21ESTabBarItemContainer";
 static const char QSSongTabClass[] = "_TtC6BNPlay24BNSongTabItemContentView";
 static char QSSearchButtonKey;
 
@@ -32,44 +33,33 @@ static BOOL QSIsSongFeedView(UIView *view)
 static void QSStyleTabBar(UIView *bar)
 {
     UIView *strip = QSView(bar, "contentView");
-    Class itemClass = objc_lookUpClass("_TtC24ESTabBarController_swift21ESTabBarItemContainer");
+    Class itemClass = objc_lookUpClass(QSTabBarItemClass);
     Class songTabClass = objc_lookUpClass(QSSongTabClass);
+    NSMutableArray<UIView *> *items = [NSMutableArray array];
     BOOL hasSongTab = NO;
-    CGRect items = CGRectNull;
     for (UIView *item in strip.subviews) {
-        if (item.class != itemClass || item.hidden) {
+        if (object_getClass(item) != itemClass) {
+            continue;
+        }
+        [items addObject:item];
+        if (item.hidden || hasSongTab) {
             continue;
         }
         for (UIView *content in item.subviews) {
-            if (content.class == songTabClass) {
+            if (object_getClass(content) == songTabClass) {
                 hasSongTab = YES;
                 break;
             }
         }
-        items = CGRectUnion(items, item.frame);
     }
 
-    CGRect frame = CGRectIntersection(strip.bounds, CGRectInset(items, -4.0, 0.0));
-    if (!hasSongTab || CGRectIsEmpty(frame)) {
-        QSRemoveGlass(strip);
-        return;
-    }
-    UIEdgeInsets insets = UIEdgeInsetsMake(CGRectGetMinY(frame) - CGRectGetMinY(strip.bounds),
-                                          CGRectGetMinX(frame) - CGRectGetMinX(strip.bounds),
-                                          CGRectGetMaxY(strip.bounds) - CGRectGetMaxY(frame),
-                                          CGRectGetMaxX(strip.bounds) - CGRectGetMaxX(frame));
-    QSGlass(strip, insets, CGFLOAT_MAX, NO);
-}
-
-static void QSStyleSongTab(UIView *tab)
-{
-    if (!QSHasViewAncestor(tab, QSTabBarClass)) {
-        return;
-    }
-
-    UIView *center = QSView(tab, "selectedView");
-    if (!center.hidden && [center isDescendantOfView:tab]) {
-        QSGlass(center, UIEdgeInsetsZero, CGFLOAT_MAX, NO);
+    // Keep the host's hit testing, selection artwork and accessibility on each UIControl.
+    for (UIView *item in items) {
+        if (hasSongTab && !item.hidden) {
+            QSGlass(item, UIEdgeInsetsMake(3.0, 3.0, 3.0, 3.0), CGFLOAT_MAX, NO);
+        } else {
+            QSRemoveGlass(item);
+        }
     }
 }
 
@@ -270,7 +260,6 @@ static void QSStyleFollow(UIView *artist)
 void QSInstallPlayerGlass(void)
 {
     QSObserveLayout(QSTabBarClass, QSStyleTabBar);
-    QSObserveLayout(QSSongTabClass, QSStyleSongTab);
     QSObserveLayout("_TtC6BNPlay19NewTogglePlayButton", QSStylePlayToggle);
     QSObserveLayout("_TtC6BNPlay22BNPlaySongtabTitleView", QSStyleModeEntry);
     QSObserveLayout("_TtC6BNPlay15BNPlayTitleView", QSStyleAlternateModeEntry);

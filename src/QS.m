@@ -120,7 +120,7 @@ static void QSInstall(void)
         NSString *version = [host objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
         NSString *build = [host objectForInfoDictionaryKey:@"CFBundleVersion"];
         NSOperatingSystemVersion os = NSProcessInfo.processInfo.operatingSystemVersion;
-        QSLog([NSString stringWithFormat:@"QS=1.03 host=%@ build=%@ iOS=%ld.%ld.%ld",
+        QSLog([NSString stringWithFormat:@"QS=1.04 host=%@ build=%@ iOS=%ld.%ld.%ld",
                version, build, (long)os.majorVersion, (long)os.minorVersion, (long)os.patchVersion]);
 
         dispatch_async(dispatch_get_main_queue(), ^{
