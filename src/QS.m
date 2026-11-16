@@ -38,7 +38,7 @@ UIView *QSView(UIView *owner, const char *field)
         return nil;
     }
 
-    // Callers name only fields verified to store a strong UIKit view in 21.6.1.
+    // Callers name only fields verified in the supported host builds.
     id value = object_getIvar(owner, ivar);
     return [value isKindOfClass:UIView.class] ? value : nil;
 }
@@ -120,15 +120,18 @@ static void QSInstall(void)
         NSString *version = [host objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
         NSString *build = [host objectForInfoDictionaryKey:@"CFBundleVersion"];
         NSOperatingSystemVersion os = NSProcessInfo.processInfo.operatingSystemVersion;
-        QSLog([NSString stringWithFormat:@"QS=1.04 host=%@ build=%@ iOS=%ld.%ld.%ld",
+        QSLog([NSString stringWithFormat:@"QS=1.05-test1 host=%@ build=%@ iOS=%ld.%ld.%ld",
                version, build, (long)os.majorVersion, (long)os.minorVersion, (long)os.patchVersion]);
 
         dispatch_async(dispatch_get_main_queue(), ^{
             QSInstallDiagnostics();
-            if (![version isEqual:@"21.6.1"] || ![build isEqual:@"100216110"]) {
+            BOOL supported = ([version isEqual:@"21.6.1"] && [build isEqual:@"100216110"]) ||
+                             ([version isEqual:@"21.7.0"] && [build isEqual:@"100217020"]);
+            if (!supported) {
                 QSLog(@"glass_skipped=unsupported_host_build");
                 return;
             }
+            QSInstallNetworkDiagnostics();
             if (!QSGlassRequested()) {
                 QSLog(@"glass_skipped=disabled_by_user");
                 return;

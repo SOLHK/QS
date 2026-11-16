@@ -5,7 +5,7 @@ THEOS_PACKAGE_SCHEME = rootless
 include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = QS
-QS_FILES = src/QS.m src/QSPlayer.m src/QSMode.m src/QSLog.m src/QSDiagnostics.m
+QS_FILES = src/QS.m src/QSPlayer.m src/QSMode.m src/QSLog.m src/QSDiagnostics.m src/QSNetwork.m
 QS_FRAMEWORKS = CoreGraphics Foundation QuartzCore UIKit UniformTypeIdentifiers
 QS_CFLAGS = -fobjc-arc -Wall -Wextra
 
