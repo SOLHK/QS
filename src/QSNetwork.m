@@ -6,11 +6,12 @@
 #include <string.h>
 
 static const NSUInteger QSResponseByteLimit = 256 * 1024;
-static const NSUInteger QSFailureEntryLimit = 12;
+static const NSUInteger QSResponseEntryLimit = 12;
 static CFTimeInterval QSNetworkDeadline;
 static Class QSHTTPResponseClass;
 static NSObject *QSNetworkLock;
 static NSMutableSet<NSString *> *QSNetworkEvents;
+static NSMutableSet<NSString *> *QSNetworkResponses;
 static NSMutableSet<NSString *> *QSNetworkFailures;
 
 static void QSNetworkLogOnce(NSString *event)
@@ -46,34 +47,30 @@ static NSString *QSCleanNetworkField(id value, NSCharacterSet *allowed, NSUInteg
     return value;
 }
 
-static void QSObserveNetworkResponse(id response, id payload, BOOL binary, NSString *serializer)
+static NSString *QSBusinessStatus(id value)
+{
+    NSString *text = [value isKindOfClass:NSNumber.class] ? [value stringValue] : value;
+    if (![text isKindOfClass:NSString.class] || text.length == 0 || text.length > 20) {
+        return nil;
+    }
+    NSString *digits = [text hasPrefix:@"-"] ? [text substringFromIndex:1] : text;
+    NSCharacterSet *numbers = [NSCharacterSet characterSetWithCharactersInString:@"0123456789"];
+    if (digits.length == 0 || [digits rangeOfCharacterFromSet:numbers.invertedSet].location != NSNotFound) {
+        return nil;
+    }
+    return text;
+}
+
+static void QSObserveNetworkResponse(id response, id payload, id error, BOOL binary, NSString *serializer)
 {
     if (CACurrentMediaTime() > QSNetworkDeadline) {
         return;
     }
     QSNetworkLogOnce([@"network_serializer_hit=" stringByAppendingString:serializer]);
 
-    id json = payload;
-    if (binary) {
-        if (![payload isKindOfClass:NSData.class]) {
-            return;
-        }
-        if ([payload length] > QSResponseByteLimit) {
-            QSNetworkLogOnce(@"network_body_skipped=over_262144_bytes");
-            return;
-        }
-        json = [NSJSONSerialization JSONObjectWithData:payload options:0 error:NULL];
-    }
-    if (![json isKindOfClass:NSDictionary.class]) {
-        return;
-    }
-    id status = json[@"status_code"];
-    if (![status isKindOfClass:NSNumber.class] || ![status isEqualToNumber:@1000062]) {
-        return;
-    }
-
     NSURL *url = nil;
     id logID = nil;
+    NSNumber *httpStatus = nil;
     if ([response isKindOfClass:QSHTTPResponseClass]) {
         id candidate = QSResponseValue(response, "finalURL");
         if (![candidate isKindOfClass:NSURL.class]) {
@@ -83,8 +80,47 @@ static void QSObserveNetworkResponse(id response, id payload, BOOL binary, NSStr
             url = candidate;
         }
         logID = QSResponseValue(response, "logId");
+        SEL statusSelector = @selector(statusCode);
+        Method statusMethod = class_getInstanceMethod(object_getClass(response), statusSelector);
+        if (statusMethod && strcmp(method_getTypeEncoding(statusMethod), "q16@0:8") == 0) {
+            NSInteger (*getStatus)(id, SEL) = (void *)objc_msgSend;
+            httpStatus = @(getStatus(response, statusSelector));
+        } else {
+            QSNetworkLogOnce(@"network_http_status_unavailable");
+        }
     } else {
         QSNetworkLogOnce(@"network_response_metadata_unavailable");
+    }
+
+    NSError *transportError = [error isKindOfClass:NSError.class] ? error : nil;
+    NSString *responseHost = url.host.lowercaseString;
+    BOOL sodaHost = [responseHost isEqualToString:@"qishui.com"] || [responseHost hasSuffix:@".qishui.com"];
+    if (!sodaHost && !transportError) {
+        return;
+    }
+
+    id json = payload;
+    NSString *bodyState = @"available";
+    if (binary) {
+        json = nil;
+        if ([payload isKindOfClass:NSData.class]) {
+            if ([payload length] <= QSResponseByteLimit) {
+                json = [NSJSONSerialization JSONObjectWithData:payload options:0 error:NULL];
+            } else {
+                bodyState = @"over_limit";
+                QSNetworkLogOnce(@"network_body_skipped=over_262144_bytes");
+            }
+        }
+    }
+    NSString *status = [json isKindOfClass:NSDictionary.class] ? QSBusinessStatus(json[@"status_code"]) : nil;
+    if (!status && [bodyState isEqualToString:@"available"]) {
+        bodyState = @"status_absent";
+    }
+    BOOL businessFailure = status && status.longLongValue != 0;
+    BOOL failed = transportError || businessFailure || httpStatus.integerValue >= 400;
+    if (!failed &&
+        ![url.path hasPrefix:@"/luna/"]) {
+        return;
     }
 
     // Keep only the endpoint and correlation ID. Never serialize the response body or headers.
@@ -94,21 +130,27 @@ static void QSObserveNetworkResponse(id response, id payload, BOOL binary, NSStr
         @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-~"];
     NSCharacterSet *idCharacters = [NSCharacterSet characterSetWithCharactersInString:
         @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"];
-    NSString *host = QSCleanNetworkField(url.host, hostCharacters, 128);
-    NSString *path = QSCleanNetworkField(url.path, pathCharacters, 192);
-    NSString *correlation = QSCleanNetworkField(logID, idCharacters, 96);
-    NSString *key = [NSString stringWithFormat:@"%@|%@|%@", host, path, correlation];
+    NSString *host = sodaHost ? QSCleanNetworkField(responseHost, hostCharacters, 128) : @"unknown";
+    NSString *path = sodaHost ? QSCleanNetworkField(url.path, pathCharacters, 192) : @"unknown";
+    NSString *correlation = sodaHost ? QSCleanNetworkField(logID, idCharacters, 96) : @"unknown";
+    NSString *errorDomain = transportError ? QSCleanNetworkField(transportError.domain, hostCharacters, 128) : @"none";
+    NSString *errorCode = transportError ? [NSString stringWithFormat:@"%ld", (long)transportError.code] : @"none";
+    NSString *http = httpStatus ? httpStatus.stringValue : @"unknown";
+    NSString *business = status ?: @"unknown";
+    NSString *key = [NSString stringWithFormat:@"%@|%@|%@|%@|%@|%@", host, path, http, business,
+                     errorDomain, errorCode];
     @synchronized (QSNetworkLock) {
-        if ([QSNetworkFailures containsObject:key]) {
+        NSMutableSet<NSString *> *records = failed ? QSNetworkFailures : QSNetworkResponses;
+        if ([records containsObject:key]) {
             return;
         }
-        if (QSNetworkFailures.count >= QSFailureEntryLimit) {
-            QSNetworkLogOnce(@"network_capture_limit=12");
+        if (records.count >= QSResponseEntryLimit) {
+            QSNetworkLogOnce(failed ? @"network_failure_limit=12" : @"network_response_limit=12");
             return;
         }
-        [QSNetworkFailures addObject:key];
-        QSLog([NSString stringWithFormat:@"network_rejection status_code=1000062 host=%@ path=%@ log_id=%@",
-               host, path, correlation]);
+        [records addObject:key];
+        QSLog([NSString stringWithFormat:@"network_response host=%@ path=%@ http_status=%@ status_code=%@ error_domain=%@ error_code=%@ body=%@ log_id=%@",
+               host, path, http, business, errorDomain, errorCode, bodyState, correlation]);
     }
 }
 
@@ -137,7 +179,12 @@ static void QSHookResponseSerializer(const char *className, const char *selector
     IMP replacement = imp_implementationWithBlock(^id(id object, id response, id payload,
                                                       id error, id __autoreleasing *resultError) {
         id result = original(object, selector, response, payload, error, resultError);
-        QSObserveNetworkResponse(response, payload, binary, serializer);
+        // Read the failure result only after the original serializer has completed.
+        id observedError = error;
+        if (!result && resultError && [*resultError isKindOfClass:NSError.class]) {
+            observedError = *resultError;
+        }
+        QSObserveNetworkResponse(response, payload, observedError, binary, serializer);
         return result;
     });
     method_setImplementation(method, replacement);
@@ -150,6 +197,7 @@ void QSInstallNetworkDiagnostics(void)
     dispatch_once(&once, ^{
         QSNetworkLock = [NSObject new];
         QSNetworkEvents = [NSMutableSet set];
+        QSNetworkResponses = [NSMutableSet set];
         QSNetworkFailures = [NSMutableSet set];
         QSHTTPResponseClass = objc_lookUpClass("TTHttpResponse");
         QSNetworkDeadline = CACurrentMediaTime() + 120.0;

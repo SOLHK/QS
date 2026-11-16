@@ -1,6 +1,6 @@
 Package: com.solhk.qs
 Name: QS
-Version: 1.05-test1
+Version: 1.05-test2
 Architecture: iphoneos-arm64
 Description: Native Liquid Glass controls for Soda Music.
 Maintainer: SOLHK
